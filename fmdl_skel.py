@@ -339,6 +339,106 @@ if not has_scale_pos_matrix(fmdl):
     # adjust section flags
     fmdl['header']['s1_flags'] = fmdl['header']['s1_flags'] | (1 << block['id'])
 
+mesh_format_blocks = {}
+for block in fmdl['sections'][0]['blocks']:
+    if block['id'] in [9,0x0a,0x0b]:
+        mesh_format_blocks[block['id']] = block
+
+# adjust format blocks
+block = mesh_format_blocks.get(0x0b)
+if block:
+    block['items'].append(b'\x01\x08\x14\x00')  # bone weight
+    block['items'].append(b'\x07\x09\x18\x00')  # bone group
+
+org_vlen = 0
+vlen = 0
+
+block = mesh_format_blocks.get(0x0a)
+if block and block['items']:
+    new_items = []
+    for item in block['items']:
+        if item[0] == 1:
+            # format spec for additional vertex chunk
+            org_vlen = struct.unpack('<B',item[2:3])[0]
+            vlen = org_vlen + 8
+            new_item = b''.join((item[:2], struct.pack('<B', vlen), item[3:]))
+            new_items.append(new_item)
+        else:
+            new_items.append(item)
+    block['items'] = new_items
+    if vlen > 0:
+        block['items'].append(
+            b'\x01\x02' + struct.pack('<B', vlen) + b'\x03\x00\x00\x00\x00')
+    
+block = mesh_format_blocks.get(0x09)
+if block:
+    block_0xa = mesh_format_blocks.get(0x0a)
+    block_0xb = mesh_format_blocks.get(0x0b)
+    if block_0xa and block_0xb:
+        block['items'] = [b''.join((
+            struct.pack('<B', len(block_0xa['items'])),
+            struct.pack('<B', len(block_0xb['items'])),
+            b'\x00\x01',
+            b'\x00\x00\x00\x00',
+        ))]
+
+for block in fmdl['sections'][0]['blocks']:
+    if block['id'] in [9,0xa,0xb]:
+        print(block)
+
+
+def add_padding(data, align):
+    rem = (0x10 - len(data) % 0x10) % 0x10
+    if rem:
+        padding = b''.join(('\x00' for x in range(rem)))
+        return b''.join((data, padding))
+    return data
+
+
+# adjust vertices in additional vertex chunk
+num_vertices = 0
+for block in fmdl['sections'][0]['blocks']:
+    if block['id'] == 0x03:
+        for item in block['items']:
+            num_vertices += struct.unpack('<H', item[0x0a:0x0c])[0]
+
+block_0x0e = None
+for block in fmdl['sections'][0]['blocks']:
+    if block['id'] == 0x0e:
+        block_0x0e = block
+
+for block in fmdl['sections'][1]['blocks']:
+    if block['id'] == 0x02:
+        vertices = []
+
+        vdata_offs = struct.unpack('<I', block_0x0e['items'][1][8:0xc])[0]
+        faces_offs = struct.unpack('<I', block_0x0e['items'][2][8:0xc])[0]
+        
+        positions = block['data'][:vdata_offs]
+        faces = block['data'][faces_offs:]
+
+        for i in range(num_vertices): 
+            vertex = block['data'][vdata_offs + org_vlen*i : vdata_offs + org_vlen*(i+1)]
+            vertex = b''.join((vertex, b'\xff\x00\x00\x00',b'\x00\x00\x00\x00'))
+            vertices.append(vertex)
+        vdata = b''.join(vertices)
+        vdata = add_padding(vdata, 0x10)
+
+        block['data'] = b''.join((positions, vdata, faces))
+
+        vdata_len = len(vdata)
+        faces_offs = vdata_offs + vdata_len
+
+        print(block_0x0e['items'])
+        item1 = block_0x0e['items'][1] 
+        item1 = item1[:4] + struct.pack('<I', vdata_len) + item1[8:]
+        item2 = block_0x0e['items'][2] 
+        item2 = item2[:8] + struct.pack('<I', faces_offs) + item2[0xc:]
+        block_0x0e['items'] = [block_0x0e['items'][0], item1, item2]
+        print(block_0x0e['items'])
+
+    
 with open("test1.fmdl","w+b") as f:
     write_fmdl(f, fmdl)
+
 

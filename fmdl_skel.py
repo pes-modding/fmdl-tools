@@ -54,10 +54,10 @@ BLOCK_TYPES = {
 
 
 def read_block(f, block_id):
-    block_type = BLOCK_TYPES[block_id] 
+    block_type = BLOCK_TYPES[block_id]
     data = f.read(block_type['len'])
     return data
-    
+
 
 def read_fmdl(f):
     fmdl = {
@@ -82,7 +82,7 @@ def read_fmdl(f):
     s[0]['len'] = struct.unpack('<I', f.read(4))[0]
     s[1]['offs'] = struct.unpack('<I', f.read(4))[0]
     s[1]['len'] = struct.unpack('<I', f.read(4))[0]
-    
+
     # blocks defs
     f.seek(blocks_offs)
     fmdl['sections'] = [
@@ -115,7 +115,7 @@ def read_fmdl(f):
     for block in fmdl['sections'][1]['blocks']:
         f.seek(section['offs'] + block['offs'])
         block['data'] = f.read(block['len'])
-             
+
     return fmdl
 
 
@@ -146,7 +146,7 @@ def has_scale_pos_matrix(fmdl):
 
 def write_padding(f, align):
     curr_offs = f.tell()
-    padding_len = (align - (curr_offs % align)) % align 
+    padding_len = (align - (curr_offs % align)) % align
     for i in range(padding_len):
         f.write('\0'.encode('utf-8'))
 
@@ -199,7 +199,7 @@ def write_fmdl(f, fmdl):
             write_padding(f, 0x10)
     write_padding(f, 0x10)
     s0_len = f.tell() - s0_offs
-    
+
     # section 1 blocks
     s1_offs = f.tell()
     for block in fmdl['sections'][1]['blocks']:
@@ -285,7 +285,7 @@ if not has_bones(fmdl):
     # rebuild s1 strings data
     s1_strings['data'] = b''.join([b''.join((x, b'\0')) for x in strs])
     new_str_offs = len(s1_strings['data'])
-    
+
     # add new string: "sk_prop"
     new_str = "sk_prop"
     string_id = len(strs)
@@ -380,7 +380,7 @@ if block and block['items']:
         items = block['items'][:-1]
         items.append(b'\x01\x03' + struct.pack('<B', vlen) + b'\x03\x00\x00\x00\x00')
         block['items'] = items
-    
+
 block = mesh_format_blocks.get(0x09)
 if block:
     block_0xa = mesh_format_blocks.get(0x0a)
@@ -422,33 +422,48 @@ for block in fmdl['sections'][1]['blocks']:
     if block['id'] == 0x02:
         vertices = []
 
+        pos_offs = struct.unpack('<I', block_0x0e['items'][0][8:0xc])[0]
         vdata_offs = struct.unpack('<I', block_0x0e['items'][1][8:0xc])[0]
         faces_offs = struct.unpack('<I', block_0x0e['items'][2][8:0xc])[0]
-        
-        positions = block['data'][:vdata_offs]
+
+        scale = 1.0
+        positions = []
+        for i in range(num_vertices):
+            x = struct.unpack('<f', block['data'][pos_offs + 0xc*i : pos_offs + 0xc*i + 4])[0]
+            y = struct.unpack('<f', block['data'][pos_offs + 0xc*i + 4: pos_offs + 0xc*i + 8])[0]
+            z = struct.unpack('<f', block['data'][pos_offs + 0xc*i + 8: pos_offs + 0xc*i + 0xc])[0]
+            positions.append((x*scale,y*scale,z*scale))
+        pdata = b''.join([
+            b''.join((struct.pack('<f',p[0]), struct.pack('<f',p[1]), struct.pack('<f',p[2])))
+            for p in positions])
+        pdata = add_padding(pdata, 0x10)
+
         faces = block['data'][faces_offs:]
 
-        for i in range(num_vertices): 
+        for i in range(num_vertices):
             vertex = block['data'][vdata_offs + org_vlen*i : vdata_offs + org_vlen*(i+1)]
             vertex = b''.join((vertex[:0x10], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00', vertex[0x10:]))
             vertices.append(vertex)
         vdata = b''.join(vertices)
         vdata = add_padding(vdata, 0x10)
 
-        block['data'] = b''.join((positions, vdata, faces))
+        block['data'] = b''.join((pdata, vdata, faces))
 
+        pdata_len = len(pdata)
+        vdata_offs = pos_offs + pdata_len
         vdata_len = len(vdata)
         faces_offs = vdata_offs + vdata_len
 
-        print(block_0x0e['items'])
-        item1 = block_0x0e['items'][1] 
-        item1 = item1[:4] + struct.pack('<I', vdata_len) + item1[8:]
-        item2 = block_0x0e['items'][2] 
+        item0 = block_0x0e['items'][0]
+        item0 = item0[:4] + struct.pack('<I', pdata_len) + struct.pack('<I', pos_offs) + item0[0xc:]
+        item1 = block_0x0e['items'][1]
+        item1 = item1[:4] + struct.pack('<I', vdata_len) + struct.pack('<I', vdata_offs) + item1[0xc:]
+        item2 = block_0x0e['items'][2]
         item2 = item2[:8] + struct.pack('<I', faces_offs) + item2[0xc:]
-        block_0x0e['items'] = [block_0x0e['items'][0], item1, item2]
+        block_0x0e['items'] = [item0, item1, item2]
         print(block_0x0e['items'])
 
-    
+
 with open("test1.fmdl","w+b") as f:
     write_fmdl(f, fmdl)
 

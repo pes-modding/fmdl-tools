@@ -347,8 +347,17 @@ for block in fmdl['sections'][0]['blocks']:
 # adjust format blocks
 block = mesh_format_blocks.get(0x0b)
 if block:
-    block['items'].append(b'\x01\x08\x14\x00')  # bone weight
-    block['items'].append(b'\x07\x09\x18\x00')  # bone group
+    #block['items'].append(b'\x01\x08\x14\x00')  # bone weight
+    #block['items'].append(b'\x07\x09\x18\x00')  # bone group
+    # test
+    block['items'] = [
+        b'\x00\x01\x00\x00',
+        b'\x02\x06\x00\x00',
+        b'\x0e\x06\x08\x00',
+        b'\x01\x08\x10\x00', # bone weight
+        b'\x07\x09\x14\x00', # bone group
+        b'\x08\x07\x18\x00',
+    ]
 
 org_vlen = 0
 vlen = 0
@@ -367,8 +376,10 @@ if block and block['items']:
             new_items.append(item)
     block['items'] = new_items
     if vlen > 0:
-        block['items'].append(
-            b'\x01\x02' + struct.pack('<B', vlen) + b'\x03\x00\x00\x00\x00')
+        # test
+        items = block['items'][:-1]
+        items.append(b'\x01\x03' + struct.pack('<B', vlen) + b'\x03\x00\x00\x00\x00')
+        block['items'] = items
     
 block = mesh_format_blocks.get(0x09)
 if block:
@@ -419,7 +430,7 @@ for block in fmdl['sections'][1]['blocks']:
 
         for i in range(num_vertices): 
             vertex = block['data'][vdata_offs + org_vlen*i : vdata_offs + org_vlen*(i+1)]
-            vertex = b''.join((vertex, b'\xff\x00\x00\x00',b'\x00\x00\x00\x00'))
+            vertex = b''.join((vertex[:0x10], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00', vertex[0x10:]))
             vertices.append(vertex)
         vdata = b''.join(vertices)
         vdata = add_padding(vdata, 0x10)

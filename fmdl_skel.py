@@ -3,6 +3,7 @@
 
 import struct
 import sys
+import copy
 
 """
 0x0: Bone definitions.
@@ -51,6 +52,190 @@ BLOCK_TYPES = {
     0x15 : { 'name': 'tex_path_hash_def', 'len': 0x8 },
     0x16 : { 'name': 'string_hash_def', 'len': 0x8 },
 }
+
+"""
+0x0: Position.
+0x1: Bone weights.
+0x2: Normals.
+0x3: Colour.
+0x7: Bone indices.
+0x8: Texture UV 0.
+0x9: Texture UV 1.
+0xA: Texture UV 2.
+0xB: Texture UV 3.
+0xC: Unknown weights 1.
+0xD: Unknown indices 1.
+0xE: Tangents.
+"""
+
+VERTEX_FORMAT_USAGES = {
+    0x0: 'position',
+    0x1: 'bone_weight',
+    0x2: 'normal',
+    0x3: 'color',
+    0x7: 'bone_group',
+    0x8: 'tex0_uv',
+    0x9: 'tex1_uv',
+    0xa: 'tex2_uv',
+    0xb: 'tex3_uv',
+    0xc: 'unknown_weight',
+    0xd: 'unknown_index',
+    0xe: 'tangent',
+}
+
+"""
+0x1: Binary32.
+0x4: Uint16.
+0x6: Binary16.
+0x7: Binary16.
+0x8: Int8 (normalized).
+0x9: Int8.
+
+(Binary16): Normal x.
+(Binary16): Normal y.
+(Binary16): Normal z.
+(Binary16): Normal w.
+(Binary16): Tangent x.
+(Binary16): Tangent y.
+(Binary16): Tangent z.
+(Binary16): Tangent w.
+(Int8): Colour r.
+(Int8): Colour g.
+(Int8): Colour b.
+(Int8): Colour a.
+(Int8): Bone weight 0.
+(Int8): Bone weight 1.
+(Int8): Bone weight 2.
+(Int8): Bone weight 3.
+(Int8): Bone id 0.
+(Int8): Bone id 1.
+(Int8): Bone id 2.
+(Int8): Bone id 3.
+(Binary16): Texture U 0.
+(Binary16): Texture V 0.
+(Binary16): Texture U 1.
+(Binary16): Texture V 1.
+(Binary16): Texture U 2.
+(Binary16): Texture V 2.
+(Binary16): Texture U 3.
+(Binary16): Texture V 3.
+(Int8): Unknown weight 0.
+(Int8): Unknown weight 1.
+(Int8): Unknown weight 2
+(Int8): Unknown weight 3.
+(Uint16): Unknown index 0.
+(Uint16): Unknown index 1.
+(Uint16): Unknown index 2.
+(Uint16): Unknown index 3.
+"""
+
+VERTEX_FORMAT_ORDER = [ 0x02, 0x0e, 0x3, 0x1, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd ]
+
+VERTEX_FORMAT_SIZES = {
+    0x2: 8,  # xyzw normal
+    0xe: 8,  # xyzw tangent
+    0x3: 4,  # rgba color
+    0x1: 4,  # 4 bone weights
+    0x7: 4,  # 4 bone group ids
+    0x8: 4,  # tex0 uv
+    0x9: 4,  # tex1 uv
+    0xa: 4,  # tex2 uv
+    0xb: 4,  # tex3 uv
+    0xc: 4,  # unknown weights
+    0xd: 16, # unknown indices
+}
+
+def vertex_format_key(vf):
+    usage = vf['usage']
+    for i,v in enumerate(VERTEX_FORMAT_ORDER):
+        if v == usage:
+            return i
+    return -1
+
+
+def get_block(fmdl, section_id, block_id):
+    for block in fmdl['sections'][section_id]['blocks']:
+        if block['id'] == block_id:
+            return block
+    return None
+
+
+class MeshInfo:
+    def __init__(self):
+        self.num_vertices = 0
+        self.info = {}
+        self.mesh_formats = []
+
+    def get_offset_for_chunk(self, chunk_type_id):
+        for mf in self.mesh_formats:
+            if mf['buffer_offset_id'] == chunk_type_id:
+                return mf['offs']
+        raise Exception("chunk_type_id not found")
+
+    def get_size_of_entry_for_chunk(self, chunk_type_id):
+        for mf in self.mesh_formats:
+            if mf['buffer_offset_id'] == chunk_type_id:
+                return mf['len']
+        raise Exception("chunk_type_id not found")
+
+
+class ModelInfo:
+    def __init__(self, fmdl):
+        self.meshes = []
+        # process some section 0 blocks
+        # 0x3 : mesh info
+        block_0x3 = get_block(fmdl, 0, 0x3)
+
+        # 0x9 : mesh format assignments
+        block = get_block(fmdl, 0, 0x9)
+        if block:
+            for i,item in enumerate(block['items']):
+                nmf = struct.unpack('<B',item[0:1])[0]
+                nvf = struct.unpack('<B',item[1:2])[0]
+                unknown = struct.unpack('<H',item[2:4])[0]
+                fmf = struct.unpack('<H',item[4:6])[0]
+                fvf = struct.unpack('<H',item[6:8])[0]
+
+                num_vertices = struct.unpack('<H', block_0x3['items'][i][0x0a:0x0c])[0]
+
+                mi = MeshInfo()
+                mi.num_vertices = num_vertices
+                mi.info['num_mesh_formats'] = nmf
+                mi.info['num_vertex_formats'] = nvf
+                mi.info['unknown'] = unknown
+                mi.info['first_mesh_format_id'] = fmf
+                mi.info['first_vertex_format_id'] = fvf
+
+                # 0xa : mesh format definitions
+                block_0xa = get_block(fmdl, 0, 0xa)
+                if block_0xa:
+                    j = 0
+                    for i in range(fmf, fmf + nmf):
+                        item = block_0xa['items'][i]
+                        ii = {}
+                        ii['buffer_offset_id'] = struct.unpack('<B',item[0:1])[0]
+                        ii['num_vertex_formats'] = struct.unpack('<B',item[1:2])[0]
+                        ii['len'] = struct.unpack('<B',item[2:3])[0]
+                        ii['type'] = struct.unpack('<B',item[3:4])[0]
+                        ii['offs'] = struct.unpack('<I',item[4:8])[0]
+                        ii['_vf'] = []
+
+                        # 0xb : vertex format definitions
+                        block_0xb = get_block(fmdl, 0, 0xb)
+                        if block_0xb:
+                            for k in range(fvf + j, fvf + j + ii['num_vertex_formats']):
+                                item = block_0xb['items'][k]
+                                jj = {}
+                                jj['usage'] = struct.unpack('<B',item[0:1])[0]
+                                jj['type'] = struct.unpack('<B',item[1:2])[0]
+                                jj['offs'] = struct.unpack('<H',item[2:4])[0]
+                                ii['_vf'].append(jj)
+                            print(ii)
+                            j += len(ii['_vf'])
+
+                        mi.mesh_formats.append(ii)
+
+                self.meshes.append(mi)
 
 
 def read_block(f, block_id):
@@ -116,6 +301,9 @@ def read_fmdl(f):
         f.seek(section['offs'] + block['offs'])
         block['data'] = f.read(block['len'])
 
+    # some structured info
+    fmdl['model_info'] = ModelInfo(fmdl)
+
     return fmdl
 
 
@@ -175,7 +363,7 @@ def write_fmdl(f, fmdl):
     fmdl['sections'][0]['blocks'].sort(key=block_key)
     fmdl['sections'][1]['blocks'].sort(key=block_key)
 
-    # block definitions (incomplete)
+    # block definitions (incomplete yet: offsets to fill in later)
     f.seek(0x40)
     s0_blocks_info_loc = f.tell()
     for block in fmdl['sections'][0]['blocks']:
@@ -234,6 +422,18 @@ def get_next_string_id(fmdl):
     return 0
 
 
+def pad_to(n, align):
+    return n + ((align - (n % align)) % align)
+
+
+def add_padding(data, align):
+    rem = (align - (len(data) % align)) % align
+    if rem:
+        padding = b''.join((b'\x00' for x in range(rem)))
+        return b''.join((data, padding))
+    return data
+
+
 with open(sys.argv[1],"rb") as f:
     fmdl = read_fmdl(f)
 
@@ -244,17 +444,34 @@ with open("test.fmdl","w+b") as f:
     write_fmdl(f, fmdl)
 
 if not has_bone_groups(fmdl):
-    # add new bone group def
-    data = b''.join((
-        struct.pack('<H', 1),
-        struct.pack('<H', 1),
-        b''.join([struct.pack('<H',0) for x in range(0x20)]),
-    ))
+    num_groups = len(fmdl['model_info'].meshes)
     block = {}
     block['id'] = 0x5
     block['items'] = []
-    block['items'].append(data)
+    for i in range(num_groups):
+        # add a new bone group def for each mesh
+        data = b''.join((
+            struct.pack('<H', 1),
+            struct.pack('<H', 1),
+            b''.join([struct.pack('<H',0) for x in range(0x20)]),
+        ))
+        block['items'].append(data)
     fmdl['sections'][0]['blocks'].append(block)
+
+    # adjust mesh info block:
+    # set bone group id to mesh ordinal
+    block_0x3 = get_block(fmdl, 0, 0x3)
+    if block_0x3:
+        new_items = []
+        for i,item in enumerate(block_0x3['items']):
+            new_item = b''.join((
+                item[:0x6],
+                struct.pack('<H', i),
+                item[0x8:],
+            ))
+            new_items.append(new_item)
+        block_0x3['items'] = new_items
+
     # adjust section flags
     fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
 
@@ -345,78 +562,143 @@ for block in fmdl['sections'][0]['blocks']:
         mesh_format_blocks[block['id']] = block
 
 # adjust format blocks
-block = mesh_format_blocks.get(0x0b)
-if block:
-    #block['items'].append(b'\x01\x08\x14\x00')  # bone weight
-    #block['items'].append(b'\x07\x09\x18\x00')  # bone group
-    # test
-    block['items'] = [
-        b'\x00\x01\x00\x00',
-        b'\x02\x06\x00\x00',
-        b'\x0e\x06\x08\x00',
-        b'\x01\x08\x10\x00', # bone weight
-        b'\x07\x09\x14\x00', # bone group
-        b'\x08\x07\x18\x00',
-    ]
+org_info = copy.deepcopy(fmdl['model_info'])
+last_offset = 0
 
-org_vlen = 0
-vlen = 0
+for mesh in fmdl['model_info'].meshes:
+    has_bone_weights = False
+    has_bone_group = False
+    next_offs = 0
+    mf_len = 0
 
-block = mesh_format_blocks.get(0x0a)
-if block and block['items']:
-    new_items = []
-    for item in block['items']:
-        if item[0] == 1:
-            # format spec for additional vertex chunk
-            org_vlen = struct.unpack('<B',item[2:3])[0]
-            vlen = org_vlen + 8
-            new_item = b''.join((item[:2], struct.pack('<B', vlen), item[3:]))
-            new_items.append(new_item)
-        else:
-            new_items.append(item)
-    block['items'] = new_items
-    if vlen > 0:
-        # test
-        items = block['items'][:-1]
-        items.append(b'\x01\x03' + struct.pack('<B', vlen) + b'\x03\x00\x00\x00\x00')
-        block['items'] = items
+    for mesh_format in mesh.mesh_formats:
+        if mesh_format['buffer_offset_id'] == 1:
+            next_offs = mesh_format['len']
+            for vertex_format in mesh_format['_vf']:
+                usage = vertex_format['usage']
+                if usage == 0x1:
+                    has_bone_weights = True
+                elif usage == 0x7:
+                    has_bone_group = True
 
-block = mesh_format_blocks.get(0x09)
-if block:
-    block_0xa = mesh_format_blocks.get(0x0a)
-    block_0xb = mesh_format_blocks.get(0x0b)
-    if block_0xa and block_0xb:
-        block['items'] = [b''.join((
-            struct.pack('<B', len(block_0xa['items'])),
-            struct.pack('<B', len(block_0xb['items'])),
-            b'\x00\x01',
-            b'\x00\x00\x00\x00',
-        ))]
+    # add bone_weight and bone_group formats, if needed
+    if not has_bone_weights or not has_bone_group:
+        # find mesh format of type 3
+        mf = None
+        for mesh_format in mesh.mesh_formats:
+            if mesh_format['buffer_offset_id'] == 1 and mesh_format['type'] == 3:
+                mf = mesh_format
+                break
+        if not mf:
+            # add new mesh format
+            mf = {
+                'buffer_offset_id': 0x01,
+                'num_vertex_formats': 0,
+                'len': mf_len,
+                'type': 0x3,
+                'offs': 0, # update later
+                '_vf': [],
+            }
+            mesh.mesh_formats.append(mf)
+
+        if not has_bone_weights:
+            mf['num_vertex_formats'] += 1
+            mf['_vf'].append({
+                'usage': 0x1,
+                'type': 0x8,
+                'offs': next_offs,
+            })
+            next_offs = next_offs + VERTEX_FORMAT_SIZES[0x1]
+            mf_len = next_offs
+        if not has_bone_group:
+            mf['num_vertex_formats'] += 1
+            mf['_vf'].append({
+                'usage': 0x7,
+                'type': 0x9,
+                'offs': next_offs,
+            })
+            next_offs = next_offs + VERTEX_FORMAT_SIZES[0x7]
+            mf_len = next_offs
+
+        # re-sort the vertex formats
+        mf['_vf'].sort(key=vertex_format_key)
+
+        # update offsets in vertex formats
+        offs = 0x1000
+        for vf in mf['_vf']:
+            offs = min(offs, vf['offs'])
+        for vf in mf['_vf']:
+            vf['offs'] = offs
+            offs += VERTEX_FORMAT_SIZES[vf['usage']]
+
+        # adjust lengths
+        for mesh_format in mesh.mesh_formats:
+            if mesh_format['buffer_offset_id'] == 1:
+                mesh_format['len'] = mf_len
+
+        # update offsets
+        for mesh_format in mesh.mesh_formats:
+            if mesh_format['buffer_offset_id'] == 1:
+                mesh_format['offs'] = last_offset
+
+        # calculate offset for next mesh
+        last_offset += mf_len * mesh.num_vertices
+        last_offset = pad_to(last_offset, 0x10)
+
+
+# rebuild block items
+print('updated blocks ...')
+new_0x9_items = []
+new_0xa_items = []
+new_0xb_items = []
+
+for i, mi in enumerate(fmdl['model_info'].meshes):
+    mfc, vfc = 0, 0
+    for mf in mi.mesh_formats:
+        mfc += 1
+        print(mf)
+        for vf in mf['_vf']:
+            vfc += 1
+            new_item = b''.join((
+                struct.pack('<B',vf['usage']),
+                struct.pack('<B',vf['type']),
+                struct.pack('<H',vf['offs']),
+            ))
+            new_0xb_items.append(new_item)
+
+        new_item = b''.join((
+            struct.pack('<B',mf['buffer_offset_id']),
+            struct.pack('<B',mf['num_vertex_formats']),
+            struct.pack('<B',mf['len']),
+            struct.pack('<B',mf['type']),
+            struct.pack('<I',mf['offs']),
+        ))
+        new_0xa_items.append(new_item)
+
+    new_item = b''.join((
+        struct.pack('<B',mfc),
+        struct.pack('<B',vfc),
+        struct.pack('<H',mi.info['unknown']),
+        struct.pack('<H',i*mfc),
+        struct.pack('<H',i*vfc),
+    ))
+    new_0x9_items.append(new_item)
+
+block_0x9 = get_block(fmdl, 0, 9)
+block_0x9['items'] = new_0x9_items
+block_0xa = get_block(fmdl, 0, 0xa)
+block_0xa['items'] = new_0xa_items
+block_0xb = get_block(fmdl, 0, 0xb)
+block_0xb['items'] = new_0xb_items
+
 
 for block in fmdl['sections'][0]['blocks']:
     if block['id'] in [9,0xa,0xb]:
         print(block)
 
 
-def add_padding(data, align):
-    rem = (0x10 - len(data) % 0x10) % 0x10
-    if rem:
-        padding = b''.join(('\x00' for x in range(rem)))
-        return b''.join((data, padding))
-    return data
-
-
 # adjust vertices in additional vertex chunk
-num_vertices = 0
-for block in fmdl['sections'][0]['blocks']:
-    if block['id'] == 0x03:
-        for item in block['items']:
-            num_vertices += struct.unpack('<H', item[0x0a:0x0c])[0]
-
-block_0x0e = None
-for block in fmdl['sections'][0]['blocks']:
-    if block['id'] == 0x0e:
-        block_0x0e = block
+block_0x0e = get_block(fmdl, 0, 0xe)
 
 for block in fmdl['sections'][1]['blocks']:
     if block['id'] == 0x02:
@@ -427,26 +709,48 @@ for block in fmdl['sections'][1]['blocks']:
         faces_offs = struct.unpack('<I', block_0x0e['items'][2][8:0xc])[0]
 
         scale = 1.0
-        positions = []
-        for i in range(num_vertices):
-            x = struct.unpack('<f', block['data'][pos_offs + 0xc*i : pos_offs + 0xc*i + 4])[0]
-            y = struct.unpack('<f', block['data'][pos_offs + 0xc*i + 4: pos_offs + 0xc*i + 8])[0]
-            z = struct.unpack('<f', block['data'][pos_offs + 0xc*i + 8: pos_offs + 0xc*i + 0xc])[0]
-            positions.append((x*scale,y*scale,z*scale))
-        pdata = b''.join([
-            b''.join((struct.pack('<f',p[0]), struct.pack('<f',p[1]), struct.pack('<f',p[2])))
-            for p in positions])
-        pdata = add_padding(pdata, 0x10)
+        pdatas = []
+        for mesh in org_info.meshes:
+            positions = []
+            mpos_offs = pos_offs + mesh.get_offset_for_chunk(0)
+            sz = mesh.get_size_of_entry_for_chunk(0)
+            for i in range(mesh.num_vertices):
+                x = struct.unpack('<f', block['data'][mpos_offs + sz*i : mpos_offs + sz*i + 4])[0]
+                y = struct.unpack('<f', block['data'][mpos_offs + sz*i + 4: mpos_offs + sz*i + 8])[0]
+                z = struct.unpack('<f', block['data'][mpos_offs + sz*i + 8: mpos_offs + sz*i + 0xc])[0]
+                positions.append((x*scale,y*scale,z*scale))
+            pdata = b''.join([
+                b''.join((struct.pack('<f',p[0]), struct.pack('<f',p[1]), struct.pack('<f',p[2])))
+                for p in positions])
+            pdata = add_padding(pdata, 0x10)
+            pdatas.append(pdata)
+        pdata = b''.join(pdatas)
+
+        vdatas = []
+        for i,mesh in enumerate(org_info.meshes):
+            vertices = []
+            mvdata_offs = vdata_offs + mesh.get_offset_for_chunk(1)
+            sz = mesh.get_size_of_entry_for_chunk(1)
+            # where to insert bone weight and bone groups
+            cut_offs = 0
+            new_mesh = fmdl['model_info'].meshes[i]
+            for mf in new_mesh.mesh_formats:
+                if mf['buffer_offset_id'] == 0x1:  # addition vertex data
+                    for vf in mf['_vf']:
+                        if vf['usage'] == 0x1:  # bone weight
+                            cut_offs = vf['offs']
+                            break
+            # update vertices
+            for i in range(mesh.num_vertices):
+                vertex = block['data'][mvdata_offs + sz*i : mvdata_offs + sz*(i+1)]
+                vertex = b''.join((vertex[:cut_offs], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00',vertex[cut_offs:]))
+                vertices.append(vertex)
+            vdata = b''.join(vertices)
+            vdata = add_padding(vdata, 0x10)
+            vdatas.append(vdata)
+        vdata = b''.join(vdatas)
 
         faces = block['data'][faces_offs:]
-
-        for i in range(num_vertices):
-            vertex = block['data'][vdata_offs + org_vlen*i : vdata_offs + org_vlen*(i+1)]
-            vertex = b''.join((vertex[:0x10], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00', vertex[0x10:]))
-            vertices.append(vertex)
-        vdata = b''.join(vertices)
-        vdata = add_padding(vdata, 0x10)
-
         block['data'] = b''.join((pdata, vdata, faces))
 
         pdata_len = len(pdata)

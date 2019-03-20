@@ -1,9 +1,18 @@
 #!/usr/bin/env python
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # FMDL sk_prop manipulator
-# adds bone groups to meshes
-# and bone weights to vertex data
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# * adds one bone called "sk_prop" to the model
+# * adds bone groups to meshes
+# * adds bone weight/bone group info to vertex data
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Author: juce
+#
+# Most of the information necessary to write this script
+# was obtained from the FMDL format wiki:
+#   https://metalgearmodding.fandom.com/wiki/FMDL
+#
+# Whatever few bits of info that were missing in the wiki,
+# were figured out by reversing Konami's original FMDLs
 
 import struct
 import sys
@@ -70,24 +79,7 @@ BLOCK_TYPES = {
 0xC: Unknown weights 1.
 0xD: Unknown indices 1.
 0xE: Tangents.
-"""
 
-VERTEX_FORMAT_USAGES = {
-    0x0: 'position',
-    0x1: 'bone_weight',
-    0x2: 'normal',
-    0x3: 'color',
-    0x7: 'bone_group',
-    0x8: 'tex0_uv',
-    0x9: 'tex1_uv',
-    0xa: 'tex2_uv',
-    0xb: 'tex3_uv',
-    0xc: 'unknown_weight',
-    0xd: 'unknown_index',
-    0xe: 'tangent',
-}
-
-"""
 0x1: Binary32.
 0x4: Uint16.
 0x6: Binary16.
@@ -471,7 +463,7 @@ def add_sk_prop(fmdl):
                 new_items.append(new_item)
             block_0x3['items'] = new_items
 
-        # adjust section flags
+        # adjust section flags (important to that: wrong flags - instant crash)
         fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
         print('adjusted section 0 flags')
 

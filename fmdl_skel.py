@@ -577,7 +577,7 @@ def add_sk_prop(fmdl):
             continue
 
         # add bone_weight and bone_group formats
-        # find mesh format of type 3
+        # it must go into a mesh format of type 3
         mf = None
         for mesh_format in mesh.mesh_formats:
             if mesh_format['buffer_offset_id'] == 1 and mesh_format['type'] == 3:
@@ -614,8 +614,10 @@ def add_sk_prop(fmdl):
             next_offs = next_offs + VERTEX_FORMAT_SIZES[0x7]
             mf_len = next_offs
 
-        # re-sort the vertex formats
-        mf['_vf'].sort(key=vertex_format_key)
+        # apparently, it is not necessary to re-sort
+        # the vertex formats according to VERTEX_FORMAT_ORDER
+        # So we are not doing it.
+        #mf['_vf'].sort(key=vertex_format_key)
 
         # update offsets in vertex formats
         # for "additional vertex info" chunk

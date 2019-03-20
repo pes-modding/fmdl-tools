@@ -1,5 +1,9 @@
+#!/usr/bin/env python
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # FMDL sk_prop manipulator
-# ~~~~~~~~~~~~~~~~~~~~~~~~
+# adds bone groups to meshes
+# and bone weights to vertex data
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 import struct
 import sys
@@ -230,7 +234,7 @@ class ModelInfo:
                                 jj['type'] = struct.unpack('<B',item[1:2])[0]
                                 jj['offs'] = struct.unpack('<H',item[2:4])[0]
                                 ii['_vf'].append(jj)
-                            print(ii)
+                            #print(ii)
                             j += len(ii['_vf'])
 
                         mi.mesh_formats.append(ii)
@@ -433,156 +437,154 @@ def add_padding(data, align):
         return b''.join((data, padding))
     return data
 
+def add_sk_prop(fmdl):
+    print('Has bones: %s' % has_bones(fmdl))
+    print('Has bone groups: %s' % has_bone_groups(fmdl))
 
-with open(sys.argv[1],"rb") as f:
-    fmdl = read_fmdl(f)
-
-print(has_bones(fmdl))
-print(has_bone_groups(fmdl))
-
-with open("test.fmdl","w+b") as f:
-    write_fmdl(f, fmdl)
-
-if not has_bone_groups(fmdl):
-    num_groups = len(fmdl['model_info'].meshes)
-    block = {}
-    block['id'] = 0x5
-    block['items'] = []
-    for i in range(num_groups):
-        # add a new bone group def for each mesh
-        data = b''.join((
-            struct.pack('<H', 1),
-            struct.pack('<H', 1),
-            b''.join([struct.pack('<H',0) for x in range(0x20)]),
-        ))
-        block['items'].append(data)
-    fmdl['sections'][0]['blocks'].append(block)
-
-    # adjust mesh info block:
-    # set bone group id to mesh ordinal
-    block_0x3 = get_block(fmdl, 0, 0x3)
-    if block_0x3:
-        new_items = []
-        for i,item in enumerate(block_0x3['items']):
-            new_item = b''.join((
-                item[:0x6],
-                struct.pack('<H', i),
-                item[0x8:],
+    if not has_bone_groups(fmdl):
+        num_groups = len(fmdl['model_info'].meshes)
+        block = {}
+        block['id'] = 0x5
+        block['items'] = []
+        for i in range(num_groups):
+            # add a new bone group def for each mesh
+            data = b''.join((
+                struct.pack('<H', 1),
+                struct.pack('<H', 1),
+                b''.join([struct.pack('<H',0) for x in range(0x20)]),
             ))
-            new_items.append(new_item)
-        block_0x3['items'] = new_items
+            block['items'].append(data)
+            print('added bone-group for mesh %d' % i)
+        fmdl['sections'][0]['blocks'].append(block)
 
-    # adjust section flags
-    fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
+        # adjust mesh info block:
+        # set bone group id to mesh ordinal
+        block_0x3 = get_block(fmdl, 0, 0x3)
+        if block_0x3:
+            new_items = []
+            for i,item in enumerate(block_0x3['items']):
+                new_item = b''.join((
+                    item[:0x6],
+                    struct.pack('<H', i),
+                    item[0x8:],
+                ))
+                new_items.append(new_item)
+            block_0x3['items'] = new_items
 
-if not has_bones(fmdl):
-    s0_string_defs = None
+        # adjust section flags
+        fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
+        print('adjusted section 0 flags')
+
+    if not has_bones(fmdl):
+        s0_string_defs = get_block(fmdl, 0, 0xc)
+        if not s0_string_defs:
+            raise Exception("Problem: no strings definitions block in section 0")
+
+        s1_strings = get_block(fmdl, 1, 0x3)
+        if not s1_strings:
+            raise Exception("Problem: no strings block in section 1")
+
+        # all strings
+        strs = []
+        for sdef in s0_string_defs['items']:
+            s_len = struct.unpack('<H', sdef[2:4])[0]
+            s_offs = struct.unpack('<I', sdef[4:8])[0]
+            strs.append(s1_strings['data'][s_offs:s_offs + s_len])
+
+        # rebuild s1 strings data
+        s1_strings['data'] = b''.join([b''.join((x, b'\0')) for x in strs])
+        new_str_offs = len(s1_strings['data'])
+
+        # add new string: "sk_prop"
+        new_str = "sk_prop"
+        string_id = len(strs)
+        strs.append(new_str.encode('utf-8'))
+        s1_strings['data'] = b''.join([b''.join((x, b'\0')) for x in strs])
+
+        item = b''.join((
+            struct.pack('<H', 0x03),
+            struct.pack('<H', len(new_str)),
+            struct.pack('<I', new_str_offs),
+        ))
+        s0_string_defs['items'].append(item)
+
+        # add new bone def
+        data = b''.join((
+            struct.pack('<H', string_id),
+            struct.pack('<H', 0xffff),
+            struct.pack('<H', 0),  # bounding box id
+            struct.pack('<H', 1),  # unknown
+            struct.pack('<Q', 0),  # padding
+            # local position
+            struct.pack('<f', 0),
+            struct.pack('<f', 0),
+            struct.pack('<f', 0),
+            struct.pack('<f', 1.0),
+            # world position
+            struct.pack('<f', 0),
+            struct.pack('<f', 0),
+            struct.pack('<f', 0),
+            struct.pack('<f', 1.0),
+        ))
+        block = {}
+        block['id'] = 0x0
+        block['items'] = []
+        block['items'].append(data)
+        fmdl['sections'][0]['blocks'].append(block)
+        print('added new bone: %s' % new_str)
+        # adjust section flags
+        fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
+        print('adjusted section 0 flags')
+
+    if not has_scale_pos_matrix(fmdl):
+        data = b''.join((
+            struct.pack('<f', 1.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0),
+            struct.pack('<f', 0.0), struct.pack('<f', 1.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0),
+            struct.pack('<f', 0.0), struct.pack('<f', 0.0), struct.pack('<f', 1.0), struct.pack('<f', 0.0),
+            struct.pack('<f', -0.0), struct.pack('<f', -0.0), struct.pack('<f', -0.0), struct.pack('<f', 1.0),
+        ))
+        block = {}
+        block['id'] = 0x01
+        block['data'] = data
+        fmdl['sections'][1]['blocks'].append(block)
+        print('added scale/pos matrix block to section 1')
+        # adjust section flags
+        fmdl['header']['s1_flags'] = fmdl['header']['s1_flags'] | (1 << block['id'])
+        print('adjusted section 1 flags')
+
+    mesh_format_blocks = {}
     for block in fmdl['sections'][0]['blocks']:
-        if block['id'] == 0x0c:
-            s0_string_defs = block
-            break
-    if not s0_string_defs:
-        raise Exception("Problem: no strings definitions block in section 0")
+        if block['id'] in [9,0x0a,0x0b]:
+            mesh_format_blocks[block['id']] = block
 
-    s1_strings = None
-    for block in fmdl['sections'][1]['blocks']:
-        if block['id'] == 0x03:
-            s1_strings = block
-            break
-    if not s1_strings:
-        raise Exception("Problem: no strings block in section 1")
+    # adjust format blocks
+    org_info = copy.deepcopy(fmdl['model_info'])
+    last_offset = 0
 
-    # all strings
-    strs = []
-    for sdef in s0_string_defs['items']:
-        s_len = struct.unpack('<H', sdef[2:4])[0]
-        s_offs = struct.unpack('<I', sdef[4:8])[0]
-        strs.append(s1_strings['data'][s_offs:s_offs + s_len])
+    modified = False
+    for mesh in fmdl['model_info'].meshes:
+        has_bone_weights = False
+        has_bone_group = False
+        next_offs = 0
+        mf_len = 0
 
-    # rebuild s1 strings data
-    s1_strings['data'] = b''.join([b''.join((x, b'\0')) for x in strs])
-    new_str_offs = len(s1_strings['data'])
+        for mesh_format in mesh.mesh_formats:
+            if mesh_format['buffer_offset_id'] == 1:
+                next_offs = mesh_format['len']
+                for vertex_format in mesh_format['_vf']:
+                    usage = vertex_format['usage']
+                    if usage == 0x1:
+                        has_bone_weights = True
+                    elif usage == 0x7:
+                        has_bone_group = True
 
-    # add new string: "sk_prop"
-    new_str = "sk_prop"
-    string_id = len(strs)
-    strs.append(new_str.encode('utf-8'))
-    s1_strings['data'] = b''.join([b''.join((x, b'\0')) for x in strs])
+        if has_bone_weights and has_bone_group:
+            # nothing to do for this mesh
+            last_offset += mesh.num_vertices * next_offs
+            last_offset = pad_to(last_offset, 0x10)
+            continue
 
-    item = b''.join((
-        struct.pack('<H', 0x03),
-        struct.pack('<H', len(new_str)),
-        struct.pack('<I', new_str_offs),
-    ))
-    s0_string_defs['items'].append(item)
-
-    # add new bone def
-    data = b''.join((
-        struct.pack('<H', string_id),
-        struct.pack('<H', 0xffff),
-        struct.pack('<H', 0),  # bounding box id
-        struct.pack('<H', 1),  # unknown
-        struct.pack('<Q', 0),  # padding
-        # local position
-        struct.pack('<f', 0),
-        struct.pack('<f', 0),
-        struct.pack('<f', 0),
-        struct.pack('<f', 1.0),
-        # world position
-        struct.pack('<f', 0),
-        struct.pack('<f', 0),
-        struct.pack('<f', 0),
-        struct.pack('<f', 1.0),
-    ))
-    block = {}
-    block['id'] = 0x0
-    block['items'] = []
-    block['items'].append(data)
-    fmdl['sections'][0]['blocks'].append(block)
-    # adjust section flags
-    fmdl['header']['s0_flags'] = fmdl['header']['s0_flags'] | (1 << block['id'])
-
-if not has_scale_pos_matrix(fmdl):
-    data = b''.join((
-        struct.pack('<f', 1.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0),
-        struct.pack('<f', 0.0), struct.pack('<f', 1.0), struct.pack('<f', 0.0), struct.pack('<f', 0.0),
-        struct.pack('<f', 0.0), struct.pack('<f', 0.0), struct.pack('<f', 1.0), struct.pack('<f', 0.0),
-        struct.pack('<f', -0.0), struct.pack('<f', -0.0), struct.pack('<f', -0.0), struct.pack('<f', 1.0),
-    ))
-    block = {}
-    block['id'] = 0x01
-    block['data'] = data
-    fmdl['sections'][1]['blocks'].append(block)
-    # adjust section flags
-    fmdl['header']['s1_flags'] = fmdl['header']['s1_flags'] | (1 << block['id'])
-
-mesh_format_blocks = {}
-for block in fmdl['sections'][0]['blocks']:
-    if block['id'] in [9,0x0a,0x0b]:
-        mesh_format_blocks[block['id']] = block
-
-# adjust format blocks
-org_info = copy.deepcopy(fmdl['model_info'])
-last_offset = 0
-
-for mesh in fmdl['model_info'].meshes:
-    has_bone_weights = False
-    has_bone_group = False
-    next_offs = 0
-    mf_len = 0
-
-    for mesh_format in mesh.mesh_formats:
-        if mesh_format['buffer_offset_id'] == 1:
-            next_offs = mesh_format['len']
-            for vertex_format in mesh_format['_vf']:
-                usage = vertex_format['usage']
-                if usage == 0x1:
-                    has_bone_weights = True
-                elif usage == 0x7:
-                    has_bone_group = True
-
-    # add bone_weight and bone_group formats, if needed
-    if not has_bone_weights or not has_bone_group:
+        # add bone_weight and bone_group formats
         # find mesh format of type 3
         mf = None
         for mesh_format in mesh.mesh_formats:
@@ -642,134 +644,146 @@ for mesh in fmdl['model_info'].meshes:
             if mesh_format['buffer_offset_id'] == 1:
                 mesh_format['offs'] = last_offset
 
+        modified = True
+
         # calculate offset for next mesh
         last_offset += mf_len * mesh.num_vertices
         last_offset = pad_to(last_offset, 0x10)
 
+    if not modified:
+        return
 
-# rebuild block items
-print('updated blocks ...')
-new_0x9_items = []
-new_0xa_items = []
-new_0xb_items = []
+    # rebuild block items
+    #print('updated blocks ...')
+    new_0x9_items = []
+    new_0xa_items = []
+    new_0xb_items = []
 
-for i, mi in enumerate(fmdl['model_info'].meshes):
-    mfc, vfc = 0, 0
-    for mf in mi.mesh_formats:
-        mfc += 1
-        print(mf)
-        for vf in mf['_vf']:
-            vfc += 1
+    for i, mi in enumerate(fmdl['model_info'].meshes):
+        mfc, vfc = 0, 0
+        for mf in mi.mesh_formats:
+            mfc += 1
+            #print(mf)
+            for vf in mf['_vf']:
+                vfc += 1
+                new_item = b''.join((
+                    struct.pack('<B',vf['usage']),
+                    struct.pack('<B',vf['type']),
+                    struct.pack('<H',vf['offs']),
+                ))
+                new_0xb_items.append(new_item)
+
             new_item = b''.join((
-                struct.pack('<B',vf['usage']),
-                struct.pack('<B',vf['type']),
-                struct.pack('<H',vf['offs']),
+                struct.pack('<B',mf['buffer_offset_id']),
+                struct.pack('<B',mf['num_vertex_formats']),
+                struct.pack('<B',mf['len']),
+                struct.pack('<B',mf['type']),
+                struct.pack('<I',mf['offs']),
             ))
-            new_0xb_items.append(new_item)
+            new_0xa_items.append(new_item)
 
         new_item = b''.join((
-            struct.pack('<B',mf['buffer_offset_id']),
-            struct.pack('<B',mf['num_vertex_formats']),
-            struct.pack('<B',mf['len']),
-            struct.pack('<B',mf['type']),
-            struct.pack('<I',mf['offs']),
+            struct.pack('<B',mfc),
+            struct.pack('<B',vfc),
+            struct.pack('<H',mi.info['unknown']),
+            struct.pack('<H',i*mfc),
+            struct.pack('<H',i*vfc),
         ))
-        new_0xa_items.append(new_item)
+        new_0x9_items.append(new_item)
 
-    new_item = b''.join((
-        struct.pack('<B',mfc),
-        struct.pack('<B',vfc),
-        struct.pack('<H',mi.info['unknown']),
-        struct.pack('<H',i*mfc),
-        struct.pack('<H',i*vfc),
-    ))
-    new_0x9_items.append(new_item)
+    block_0x9 = get_block(fmdl, 0, 9)
+    block_0x9['items'] = new_0x9_items
+    block_0xa = get_block(fmdl, 0, 0xa)
+    block_0xa['items'] = new_0xa_items
+    block_0xb = get_block(fmdl, 0, 0xb)
+    block_0xb['items'] = new_0xb_items
 
-block_0x9 = get_block(fmdl, 0, 9)
-block_0x9['items'] = new_0x9_items
-block_0xa = get_block(fmdl, 0, 0xa)
-block_0xa['items'] = new_0xa_items
-block_0xb = get_block(fmdl, 0, 0xb)
-block_0xb['items'] = new_0xb_items
+    #for block in fmdl['sections'][0]['blocks']:
+    #    if block['id'] in [9,0xa,0xb]:
+    #        print(block)
 
+    # adjust vertices in additional vertex chunk
+    block_0x0e = get_block(fmdl, 0, 0xe)
 
-for block in fmdl['sections'][0]['blocks']:
-    if block['id'] in [9,0xa,0xb]:
-        print(block)
-
-
-# adjust vertices in additional vertex chunk
-block_0x0e = get_block(fmdl, 0, 0xe)
-
-for block in fmdl['sections'][1]['blocks']:
-    if block['id'] == 0x02:
-        vertices = []
-
-        pos_offs = struct.unpack('<I', block_0x0e['items'][0][8:0xc])[0]
-        vdata_offs = struct.unpack('<I', block_0x0e['items'][1][8:0xc])[0]
-        faces_offs = struct.unpack('<I', block_0x0e['items'][2][8:0xc])[0]
-
-        scale = 1.0
-        pdatas = []
-        for mesh in org_info.meshes:
-            positions = []
-            mpos_offs = pos_offs + mesh.get_offset_for_chunk(0)
-            sz = mesh.get_size_of_entry_for_chunk(0)
-            for i in range(mesh.num_vertices):
-                x = struct.unpack('<f', block['data'][mpos_offs + sz*i : mpos_offs + sz*i + 4])[0]
-                y = struct.unpack('<f', block['data'][mpos_offs + sz*i + 4: mpos_offs + sz*i + 8])[0]
-                z = struct.unpack('<f', block['data'][mpos_offs + sz*i + 8: mpos_offs + sz*i + 0xc])[0]
-                positions.append((x*scale,y*scale,z*scale))
-            pdata = b''.join([
-                b''.join((struct.pack('<f',p[0]), struct.pack('<f',p[1]), struct.pack('<f',p[2])))
-                for p in positions])
-            pdata = add_padding(pdata, 0x10)
-            pdatas.append(pdata)
-        pdata = b''.join(pdatas)
-
-        vdatas = []
-        for i,mesh in enumerate(org_info.meshes):
+    for block in fmdl['sections'][1]['blocks']:
+        if block['id'] == 0x02:
             vertices = []
-            mvdata_offs = vdata_offs + mesh.get_offset_for_chunk(1)
-            sz = mesh.get_size_of_entry_for_chunk(1)
-            # where to insert bone weight and bone groups
-            cut_offs = 0
-            new_mesh = fmdl['model_info'].meshes[i]
-            for mf in new_mesh.mesh_formats:
-                if mf['buffer_offset_id'] == 0x1:  # addition vertex data
-                    for vf in mf['_vf']:
-                        if vf['usage'] == 0x1:  # bone weight
-                            cut_offs = vf['offs']
-                            break
-            # update vertices
-            for i in range(mesh.num_vertices):
-                vertex = block['data'][mvdata_offs + sz*i : mvdata_offs + sz*(i+1)]
-                vertex = b''.join((vertex[:cut_offs], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00',vertex[cut_offs:]))
-                vertices.append(vertex)
-            vdata = b''.join(vertices)
-            vdata = add_padding(vdata, 0x10)
-            vdatas.append(vdata)
-        vdata = b''.join(vdatas)
 
-        faces = block['data'][faces_offs:]
-        block['data'] = b''.join((pdata, vdata, faces))
+            pos_offs = struct.unpack('<I', block_0x0e['items'][0][8:0xc])[0]
+            vdata_offs = struct.unpack('<I', block_0x0e['items'][1][8:0xc])[0]
+            faces_offs = struct.unpack('<I', block_0x0e['items'][2][8:0xc])[0]
 
-        pdata_len = len(pdata)
-        vdata_offs = pos_offs + pdata_len
-        vdata_len = len(vdata)
-        faces_offs = vdata_offs + vdata_len
+            scale = 1.0
+            pdatas = []
+            for mesh in org_info.meshes:
+                positions = []
+                mpos_offs = pos_offs + mesh.get_offset_for_chunk(0)
+                sz = mesh.get_size_of_entry_for_chunk(0)
+                for i in range(mesh.num_vertices):
+                    x = struct.unpack('<f', block['data'][mpos_offs + sz*i : mpos_offs + sz*i + 4])[0]
+                    y = struct.unpack('<f', block['data'][mpos_offs + sz*i + 4: mpos_offs + sz*i + 8])[0]
+                    z = struct.unpack('<f', block['data'][mpos_offs + sz*i + 8: mpos_offs + sz*i + 0xc])[0]
+                    positions.append((x*scale,y*scale,z*scale))
+                pdata = b''.join([
+                    b''.join((struct.pack('<f',p[0]), struct.pack('<f',p[1]), struct.pack('<f',p[2])))
+                    for p in positions])
+                pdata = add_padding(pdata, 0x10)
+                pdatas.append(pdata)
+            pdata = b''.join(pdatas)
 
-        item0 = block_0x0e['items'][0]
-        item0 = item0[:4] + struct.pack('<I', pdata_len) + struct.pack('<I', pos_offs) + item0[0xc:]
-        item1 = block_0x0e['items'][1]
-        item1 = item1[:4] + struct.pack('<I', vdata_len) + struct.pack('<I', vdata_offs) + item1[0xc:]
-        item2 = block_0x0e['items'][2]
-        item2 = item2[:8] + struct.pack('<I', faces_offs) + item2[0xc:]
-        block_0x0e['items'] = [item0, item1, item2]
-        print(block_0x0e['items'])
+            vdatas = []
+            for i,mesh in enumerate(org_info.meshes):
+                vertices = []
+                mvdata_offs = vdata_offs + mesh.get_offset_for_chunk(1)
+                sz = mesh.get_size_of_entry_for_chunk(1)
+                # where to insert bone weight and bone groups
+                cut_offs = 0
+                new_mesh = fmdl['model_info'].meshes[i]
+                for mf in new_mesh.mesh_formats:
+                    if mf['buffer_offset_id'] == 0x1:  # addition vertex data
+                        for vf in mf['_vf']:
+                            if vf['usage'] == 0x1:  # bone weight
+                                cut_offs = vf['offs']
+                                break
+                # update vertices
+                for i in range(mesh.num_vertices):
+                    vertex = block['data'][mvdata_offs + sz*i : mvdata_offs + sz*(i+1)]
+                    vertex = b''.join((vertex[:cut_offs], b'\xff\x00\x00\x00', b'\x00\x00\x00\x00',vertex[cut_offs:]))
+                    vertices.append(vertex)
+                vdata = b''.join(vertices)
+                vdata = add_padding(vdata, 0x10)
+                vdatas.append(vdata)
+            vdata = b''.join(vdatas)
+
+            faces = block['data'][faces_offs:]
+            block['data'] = b''.join((pdata, vdata, faces))
+
+            pdata_len = len(pdata)
+            vdata_offs = pos_offs + pdata_len
+            vdata_len = len(vdata)
+            faces_offs = vdata_offs + vdata_len
+
+            item0 = block_0x0e['items'][0]
+            item0 = item0[:4] + struct.pack('<I', pdata_len) + struct.pack('<I', pos_offs) + item0[0xc:]
+            item1 = block_0x0e['items'][1]
+            item1 = item1[:4] + struct.pack('<I', vdata_len) + struct.pack('<I', vdata_offs) + item1[0xc:]
+            item2 = block_0x0e['items'][2]
+            item2 = item2[:8] + struct.pack('<I', faces_offs) + item2[0xc:]
+            block_0x0e['items'] = [item0, item1, item2]
+            #print(block_0x0e['items'])
+            print('additional vertex data chunk updated')
 
 
-with open("test1.fmdl","w+b") as f:
-    write_fmdl(f, fmdl)
+if __name__ == "__main__":
+    if len(sys.argv)<3:
+        print('Usage: %s <input.fmdl> <output.fmdl>' % sys.argv[0])
+        sys.exit(0)
 
+    with open(sys.argv[1],"rb") as f:
+        fmdl = read_fmdl(f)
+
+    add_sk_prop(fmdl)
+
+    with open(sys.argv[2],"w+b") as f:
+        write_fmdl(f, fmdl)
 

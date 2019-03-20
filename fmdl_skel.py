@@ -624,12 +624,13 @@ for mesh in fmdl['model_info'].meshes:
         mf['_vf'].sort(key=vertex_format_key)
 
         # update offsets in vertex formats
-        offs = 0x1000
-        for vf in mf['_vf']:
-            offs = min(offs, vf['offs'])
-        for vf in mf['_vf']:
-            vf['offs'] = offs
-            offs += VERTEX_FORMAT_SIZES[vf['usage']]
+        # for "additional vertex info" chunk
+        offs = 0
+        for mf in mesh.mesh_formats:
+            if mf['buffer_offset_id'] == 1:
+                for vf in mf['_vf']:
+                    vf['offs'] = offs
+                    offs += VERTEX_FORMAT_SIZES[vf['usage']]
 
         # adjust lengths
         for mesh_format in mesh.mesh_formats:

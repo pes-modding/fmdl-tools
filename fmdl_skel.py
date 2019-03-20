@@ -767,15 +767,18 @@ def add_sk_prop(fmdl):
 
 
 if __name__ == "__main__":
+    print('FMDL Skeleton Adder. Version 1.0 (2019)')
     if len(sys.argv)<3:
         print('Usage: %s <input.fmdl> <output.fmdl>' % sys.argv[0])
         sys.exit(0)
 
     with open(sys.argv[1],"rb") as f:
         fmdl = read_fmdl(f)
+        print('Model loaded from: %s' % sys.argv[1])
 
     add_sk_prop(fmdl)
 
     with open(sys.argv[2],"w+b") as f:
         write_fmdl(f, fmdl)
+        print('Model saved to: %s' % sys.argv[2])
 
